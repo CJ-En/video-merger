@@ -4,10 +4,13 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from unittest import mock
+
+from video_merger import plan as planning
 from video_merger.discover import group_files, loose_part_from_name, part_from_name
-from video_merger.plan import build_plan
-from video_merger.probe import (MediaFile, ProbeError, container_name, dump_bytes, hevc_settings, parse_dmm_comment,
-                                parse_duration, parse_probe)
+from video_merger.plan import build_plan, size_mismatch, size_tolerance, size_window, sizes_text
+from video_merger.probe import (MediaFile, ProbeError, container_name, dump_bytes, hevc_settings, mp4_payload,
+                                parse_dmm_comment, parse_duration, parse_probe)
 
 from .helpers import AAC, H264, VP9, media
 
@@ -127,6 +130,55 @@ class ProbeParseTest(unittest.TestCase):
         hevc, h264 = parse_probe(Path("x.mkv"), 5, {"streams": streams, "format": {}}).streams
         self.assertEqual(hevc.settings, hevc_settings(header))
         self.assertEqual(h264.settings, "")  # H.264 parts with other settings join fine
+
+    def test_an_mp4_files_packets_are_what_its_mdat_boxes_hold(self):
+        folder = Path(tempfile.mkdtemp(prefix="vm boxes ")).resolve()
+        self.addCleanup(shutil.rmtree, folder, True)
+
+        def box(kind: bytes, body: bytes, size64: bool = False, to_end: bool = False) -> bytes:
+            if size64:
+                return (1).to_bytes(4, "big") + kind + (16 + len(body)).to_bytes(8, "big") + body
+            return (0 if to_end else 8 + len(body)).to_bytes(4, "big") + kind + body
+
+        def payload(data: bytes):
+            path = folder / "x.mp4"
+            path.write_bytes(data)
+            return mp4_payload(path)
+
+        head = box(b"ftyp", b"isom" + bytes(8)) + box(b"moov", bytes(500)) + box(b"free", bytes(30))
+        self.assertEqual(payload(head + box(b"mdat", bytes(1000))), 1000)
+        # Fragments (moof + mdat), a 64-bit size, and a last box that runs to the end of the file.
+        self.assertEqual(payload(head + box(b"moof", bytes(90)) + box(b"mdat", bytes(700), size64=True)
+                                 + box(b"moof", bytes(90)) + box(b"mdat", bytes(300), to_end=True)), 1000)
+        self.assertIsNone(payload(head + box(b"mdat", bytes(1000))[:-1]))  # cut short: the box doesn't fit
+        self.assertIsNone(payload(head + b"\0\0\0\x04mdat"))  # a box smaller than its header
+        self.assertIsNone(payload(head + b"\0\0"))
+        self.assertIsNone(mp4_payload(folder / "missing.mp4"))
+
+    def test_mkvmerge_statistics_count_only_in_files_mkvmerge_wrote(self):
+        def streams(language: str = ""):
+            tags = [{f"NUMBER_OF_FRAMES{language}": "3596", f"NUMBER_OF_BYTES{language}": "4434102"},
+                    {f"NUMBER_OF_FRAMES{language}": "5626", f"NUMBER_OF_BYTES{language}": "964448"}]
+            return [{"index": 0, "codec_type": "video", "codec_name": "h264", "tags": tags[0]},
+                    {"index": 1, "codec_type": "audio", "codec_name": "aac", "tags": tags[1]}]
+
+        def read(writer: str, raw: list) -> MediaFile:
+            return parse_probe(Path("x.mkv"), 5_441_330, {"streams": raw, "format": {"format_name": "matroska,webm",
+                                                                                     "tags": {"encoder": writer}}})
+
+        mkvmerge = "libebml v1.4.5 + libmatroska v1.7.1"
+        for raw in (streams(), streams("-eng")):  # older mkvmerge: with a language
+            media = read(mkvmerge, raw)
+            self.assertEqual((media.payload, [s.frames for s in media.streams]), (5_398_550, [3596, 5626]))
+        # ffmpeg copies the tags of the file it read into the file it writes (a join keeps part 1's): never counted.
+        media = read("Lavf62.19.101", streams())
+        self.assertEqual((media.payload, [s.frames for s in media.streams]), (None, [0, 0]))
+        raw = streams()
+        del raw[1]["tags"]["NUMBER_OF_BYTES"]
+        self.assertIsNone(read(mkvmerge, raw).payload)  # a track without its bytes: not known
+        mp4 = parse_probe(Path("x.mp4"), 5, {"streams": [{"index": 0, "codec_type": "video", "nb_frames": "7192"}],
+                                             "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"}})
+        self.assertEqual(mp4.video.frames, 7192)
 
 
 class GroupTest(unittest.TestCase):
@@ -318,7 +370,7 @@ class PlanTest(unittest.TestCase):
         self.assertTrue(items["abc00123"].reason.endswith("is already there, but it is another video (its DMM tag says xyz00001)"))
         self.assertTrue(items["My Video"].reason.endswith("is already there, but it is another video (0:02:30 long, the parts together 0:03:20)"))
         found["My Video.mkv"] = MediaFile(Path("My Video.mkv"), 30_000_000, 200.0, (H264, AAC))
-        self.assertTrue(plan()["My Video"].reason.endswith("another video (0.03 GB, the parts together 0.00 GB)"))
+        self.assertTrue(plan()["My Video"].reason.endswith("another video (30.0 MB, the parts together 0.0 MB)"))
         found["abc00123.mkv"] = media("abc00123.mkv", "abc00123", duration=50.0)  # this video: its tag
         found["My Video.mkv"] = media("My Video.mkv", duration=201.5)  # this video: as long as the parts (2 s)
         found["stu00901.wmv"] = media("stu00901.wmv", duration=199.0)
@@ -345,6 +397,82 @@ class PlanTest(unittest.TestCase):
         files = [media(f"{d}/abc00123_{n}.mkv") for d in ("a", "b") for n in (1, 2)]
         items = self.plan(files, out=Path("out"))
         self.assertEqual([i.action for i in items], ["problem", "problem"])
+
+
+def sized(name: str, container: str, size: int, payload: int | None = None, video: int = 0, audio: int = 0,
+          seconds: float = 1800.0) -> MediaFile:
+    """A 640x360 H.264 + AAC file of this size; payload, video and audio packets as ffprobe reads them (0: unknown)."""
+    streams = (replace(H264, width=640, height=360, duration=seconds, frames=video), replace(AAC, duration=seconds, frames=audio))
+    return MediaFile(Path(name), size, seconds, streams, container=container, payload=payload)
+
+
+class SizeCheckTest(unittest.TestCase):
+    """The merged file's size against the parts': the same streams, in another kind of file (measured with ffmpeg)."""
+
+    # Two 30-minute MP4 parts at 300 kbit/s video + 64 kbit/s AAC (one of DMM's low bitrates), joined with ffmpeg.
+    PARTS = [sized("tst00001_low1.mp4", "MP4", 83_921_646, 81_974_683, 53_946, 84_376),
+             sized("tst00001_low2.mp4", "MP4", 83_921_747, 81_974_784, 53_946, 84_376)]
+    AS_MKV = sized("tst00001.mkv", "Matroska", 165_927_448, seconds=3600.0)
+    AS_MP4 = sized("tst00001.mp4", "MP4", 167_858_581, 163_965_491, 107_892, 168_752, 3600.0)
+
+    def test_mp4_parts_make_a_smaller_matroska_file(self):
+        total = sum(part.size for part in self.PARTS)
+        self.assertGreater(total - self.AS_MKV.size, size_tolerance(total))  # 1.1% smaller: refused by the parts' size
+        self.assertIsNone(size_mismatch(self.PARTS, self.AS_MKV))
+        self.assertIsNone(size_mismatch(self.PARTS, self.AS_MP4))
+        self.assertAlmostEqual(size_window(self.PARTS, self.AS_MKV)[0], self.AS_MKV.size, delta=self.AS_MKV.size / 5000)
+        # 2% of the packets lost (their bytes, from the file and an MP4's count): refused, with sizes that read apart.
+        lost = self.AS_MP4.payload // 50
+        self.assertEqual(size_mismatch(self.PARTS, replace(self.AS_MKV, size=self.AS_MKV.size - lost)),
+                         ("162.6 MB", "167.8 MB", "about 165.9 MB as Matroska"))
+        self.assertEqual(size_mismatch(self.PARTS, replace(self.AS_MP4, size=self.AS_MP4.size - lost,
+                                                           payload=self.AS_MP4.payload - lost)), ("164.6 MB", "167.8 MB", ""))
+
+    def test_a_low_bitrate_matroska_file_made_earlier_is_this_video(self):
+        folder = Path(tempfile.mkdtemp(prefix="vm sizes ")).resolve()
+        self.addCleanup(shutil.rmtree, folder, True)
+        (folder / "My Video.mkv").write_bytes(b"x")
+        parts = [replace(part, path=folder / f"My Video part{n}.mp4", file_id=None, part=None)
+                 for n, part in enumerate(self.PARTS, 1)]
+        groups, _ = group_files(parts)
+        for there, kind in ((self.AS_MKV, "already"), (replace(self.AS_MKV, size=self.AS_MKV.size - (4 << 20)), "taken")):
+            item = build_plan(groups, None, read=lambda path: there)[0]
+            self.assertEqual(item.kind, kind)
+        self.assertEqual(item.reason, f"{folder / 'My Video.mkv'} is already there, but it is another video "
+                                      "(161.7 MB, the parts together 167.8 MB, about 165.9 MB as Matroska)")
+
+    @mock.patch.object(planning, "SIZE_FLOOR", 0)  # small clips: checked as a real video, 1% only
+    def test_matroska_parts_make_a_bigger_mp4_file(self):
+        # Two 2-minute parts at 300 kbit/s + 64 kbit/s: written by ffmpeg (their bytes not known), or by mkvmerge (it
+        # writes their bytes, and packs audio packets: they take less room).
+        by_ffmpeg = [sized("a1.mkv", "Matroska", 5_459_237, seconds=120.021),
+                     sized("a2.mkv", "Matroska", 5_466_021, seconds=120.021)]
+        by_mkvmerge = [sized("b1.mkv", "Matroska", 5_441_330, 5_398_550, 3596, 5626, 120.021),
+                       sized("b2.mkv", "Matroska", 5_437_784, 5_395_002, 3596, 5626, 120.021)]
+        for parts, joined in ((by_ffmpeg, sized("a.mp4", "MP4", 11_101_064, 10_794_058, 7192, 11_252, 240.042)),
+                              (by_mkvmerge, sized("b.mp4", "MP4", 11_139_384, 10_794_702, 7192, 11_252, 240.042)),
+                              (by_mkvmerge, sized("b.mkv", "Matroska", 10_926_753, seconds=240.041))):
+            total = sum(part.size for part in parts)
+            if joined.container == "MP4":
+                self.assertGreater(joined.size - total, size_tolerance(total))  # 1.6% / 2.4% bigger
+            self.assertIsNone(size_mismatch(parts, joined), joined.path)
+            lost = 10_794_000 // 50
+            payload = joined.payload and joined.payload - lost
+            self.assertIsNotNone(size_mismatch(parts, replace(joined, size=joined.size - lost, payload=payload)), joined.path)
+
+    def test_without_the_bytes_of_the_packets_the_parts_size(self):
+        # A .wmv (AsfBin), or an MP4 whose boxes can't be read: the merged file is as big as the parts, within 1%.
+        for kind, payload in (("ASF", None), ("MP4", None)):
+            parts = [replace(part, container=kind, payload=payload) for part in self.PARTS]
+            self.assertIsNone(size_mismatch(parts, replace(self.AS_MP4, container=kind, payload=payload)))
+            self.assertEqual(size_window(parts, replace(self.AS_MKV, container=kind))[0], 167_843_393)
+        self.assertEqual(size_mismatch(self.PARTS[:1], self.AS_MP4), ("167.9 MB", "83.9 MB", ""))
+
+    def test_sizes_read_apart(self):
+        self.assertEqual(sizes_text(165_927_448, 167_843_393), ["165.9 MB", "167.8 MB"])  # not "0.17 GB" twice
+        self.assertEqual(sizes_text(2_431_000_000, 2_455_000_000), ["2.43 GB", "2.46 GB"])
+        self.assertEqual(sizes_text(2_431_000_000, 2_434_000_000), ["2.431 GB", "2.434 GB"])
+        self.assertEqual(sizes_text(5_000_000, 5_040_000, 5_000_000), ["5.00 MB", "5.04 MB", "5.00 MB"])
 
 
 if __name__ == "__main__":

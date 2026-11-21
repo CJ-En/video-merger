@@ -12,7 +12,7 @@ from pathlib import Path
 
 from unittest import mock
 
-from video_merger import cli, logs, merge as merging, tools
+from video_merger import cli, logs, merge as merging, plan as planning, tools
 from video_merger.discover import find_video_files, group_files
 from video_merger.merge import merge
 from video_merger.plan import build_plan
@@ -32,6 +32,9 @@ def encoders() -> str:
 
 ENCODERS = encoders()
 VIDEO_CODEC = "libx264" if "libx264" in ENCODERS else "mpeg4"
+# ffmpeg's noise filter leaves out the packets an expression picks (FFmpeg 5.1 and newer).
+DROPS_PACKETS = TOOLS is not None and "-drop " in subprocess.run(
+    [str(TOOLS.ffmpeg), "-hide_banner", "-h", "bsf=noise"], capture_output=True, text=True).stdout
 
 
 def make_clip(path: Path, seconds: float = 2, size: str = "320x240", codec: str = VIDEO_CODEC, comment: dict | None = None,
@@ -266,17 +269,54 @@ class MergeTest(unittest.TestCase):
 
     def test_a_merged_size_far_from_the_parts_is_refused_and_parts_kept(self):
         self.dmm_parts(2)
-        from video_merger import merge as merge_module
-
-        real = merge_module.size_tolerance
-        merge_module.size_tolerance = lambda total: -1  # every result "too big"
-        try:
+        with mock.patch.object(planning, "size_tolerance", return_value=-1):  # every result "too big"
             code, output = run_cli(str(self.parts), "--delete-parts")
-        finally:
-            merge_module.size_tolerance = real
         self.assertEqual(code, 1)
         self.assertIn("but the parts add up to", output)
         self.assertEqual(sorted(p.suffix for p in self.parts.iterdir()), [".mkv", ".mkv"])  # parts not deleted
+
+    def low_bitrate_parts(self, folder: Path, extension: str) -> list[Path]:
+        """Two 40-second parts at 100 kbit/s video + 32 kbit/s sound: the container's room for each packet is a few
+        percent of the file, as for DMM's 300 kbit/s downloads."""
+        folder.mkdir()
+        return [make_clip(folder / f"low part{n}.{extension}", seconds=40, options=("-b:v", "100k", "-b:a", "32k"),
+                          comment={"file_id": "abc00123", "part": str(n)}) for n in (1, 2)]
+
+    @mock.patch.object(planning, "SIZE_FLOOR", 0)  # small clips: within 1%, as a real video (1 MiB at least)
+    def test_low_bitrate_parts_made_into_the_other_kind_of_file(self):
+        # MP4 needs more room per packet than Matroska: the parts as one .mkv are smaller, as one .mp4 bigger.
+        for source, target in (("mp4", "mkv"), ("mkv", "mp4")):
+            folder = self.dir / f"{source} parts"
+            parts = self.low_bitrate_parts(folder, source)
+            code, output = run_cli(str(folder), "--container", target)
+            self.assertEqual(code, 0, output)
+            total, size = sum(p.stat().st_size for p in parts), (folder / f"abc00123.{target}").stat().st_size
+            self.assertGreater(abs(size - total), total / 100, (source, size, total))  # refused by the parts' size
+
+    @unittest.skipUnless(DROPS_PACKETS, "this ffmpeg can't leave packets out")
+    @mock.patch.object(planning, "SIZE_FLOOR", 0)
+    def test_a_merged_file_missing_packets_is_refused(self):
+        real_join = merging._join
+
+        def join_losing_packets(group, target, partial, *args):
+            real_join(group, target, partial, *args)
+            whole = partial.with_name("whole" + partial.suffix)
+            partial.replace(whole)
+            # Every 50th packet of each stream left out (key frames kept): 2% of the packets, the same length.
+            subprocess.run([str(TOOLS.ffmpeg), "-v", "error", "-i", str(whole), "-map", "0:v", "-map", "0:a",
+                            "-map_chapters", "0", "-c", "copy", "-bsf", r"noise=drop=eq(mod(n\,50)\,17)", str(partial)],
+                           check=True)
+            whole.unlink()
+
+        for source, target, kind in (("mp4", "mkv", "Matroska"), ("mkv", "mp4", "MP4")):
+            folder = self.dir / f"{source} parts"
+            parts = self.low_bitrate_parts(folder, source)
+            with mock.patch.object(merging, "_join", side_effect=join_losing_packets):
+                code, output = run_cli(str(folder), "--container", target, "--delete-parts")
+            self.assertEqual(code, 1, output)
+            self.assertRegex(output, rf"FAILED: the merged file is [0-9.]+ MB, but the parts add up to [0-9.]+ MB "
+                                     rf"\(about [0-9.]+ MB as {kind}\)")
+            self.assertEqual(sorted(folder.iterdir()), parts)  # nothing kept, the parts not deleted
 
     def test_files_from_a_list_with_dmm_s_part_count(self):
         paths = self.dmm_parts(3)

@@ -34,9 +34,10 @@ What gets merged
   .mkv (or .mp4), with a chapter at each join.
 - WMV parts (.wmv: WMV or VC-1 video with WMA sound): joined by AsfBin into one .wmv, with a
   marker at each join. Always a .wmv, whatever file type is chosen.
-- Never re-encoded. A video is merged only when every part is there, the parts match, and the
-  result has the right length and size and every track. Left alone: VP9 4K parts, Blu-ray/DVD
-  Remuxes and rips, parts in different formats, AVI, TS, VOB, ISO.
+- Never re-encoded. A video is merged only when no part is missing in between, the parts
+  match, and the result has the right length and size and every track. A missing last part
+  can't be noticed. Left alone: VP9 4K parts, Blu-ray/DVD Remuxes and rips, parts in different
+  formats, AVI, TS, VOB, ISO.
 - The parts are deleted only when you tick "Delete the parts after a merge", and only after
   their merged file passed every check.
 - Parts are found by DMM's tag in the files, or by their names in one folder: name-pt1,
@@ -56,4 +57,6 @@ starter) with their licenses.
 Terminal use: VideoMerger.exe --help (e.g. VideoMerger.exe merge D:\Downloads --dry-run).
 
 Windows may warn that the program is from an unknown publisher (it isn't signed):
-"More info" -> "Run anyway".
+"More info" -> "Run anyway". With Windows' Smart App Control on, the program is blocked
+completely, without "Run anyway". Then use the Python version instead: python -m video_merger
+(see README.md in Video Merger's source code).

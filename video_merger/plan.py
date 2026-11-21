@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
@@ -12,6 +13,16 @@ from .discover import WMV_EXTENSION, Group
 from .probe import MediaFile, ProbeError, same_rate
 
 AV_DRIFT_WARNING = 2.0  # seconds between a part's audio and video length
+SIZE_FLOOR = 1 << 20  # the size check's smallest tolerance: kinds of file differ by kilobytes of headers
+# The room a container takes per packet besides the packets, measured with ffmpeg on H.264 + AAC clips (64 kbit/s to
+# 6 Mbit/s video, 30 and 60 fps): its Matroska writer, which writes every merged .mkv, takes 7.0-7.6 bytes; an MP4
+# 14-19, for its index of every packet. So MP4 parts make a smaller .mkv: more than 1% smaller below about 0.4 Mbit/s
+# (video and sound, 30 fps; 0.7 Mbit/s at 60 fps).
+MATROSKA_PACKET_BYTES = 7.1
+# Matroska files may take less when their writer packs several audio packets into one block (mkvmerge does: 3 bytes
+# instead of 7 per audio packet; its files say their bytes, MediaFile.payload, but other writers' may not).
+LACED_AUDIO_SAVING = 6.0
+CONTENT = ("video", "audio", "subtitle")
 
 # Only WEB-DL parts are merged (DMM: H.264 or HEVC video, AAC audio). Disc Remuxes/rips and WMV are not.
 WEB_VIDEO = {"h264", "hevc"}
@@ -49,8 +60,93 @@ def duration_tolerance(total: float) -> float:
 
 
 def size_tolerance(total: int) -> int:
-    """How far the merged size may be from the parts' sum: the streams are copied, only the container differs."""
-    return max(1 << 20, total // 100)
+    """How far the merged size may be from the size expected (size_window): 1%, at least SIZE_FLOOR."""
+    return max(SIZE_FLOOR, total // 100)
+
+
+def counted_packets(media: MediaFile, kinds: tuple[str, ...] = CONTENT) -> int | None:
+    """The packets of the file's streams of these kinds as the file counts them (Stream.frames), or None."""
+    streams = [stream for stream in media.streams if stream.kind in kinds]
+    return sum(stream.frames for stream in streams) if streams and all(stream.frames for stream in streams) else None
+
+
+def estimated_packets(media: MediaFile, kinds: tuple[str, ...] = CONTENT) -> float:
+    """The packets of the file's streams of these kinds from their length: video at its frame rate; AAC 1024 samples
+    a packet (HE-AAC 2048); subtitles not counted."""
+    total = 0.0
+    for stream in media.streams:
+        seconds = stream.duration or media.duration
+        try:
+            if stream.kind == "video" and "video" in kinds:
+                total += seconds * float(Fraction(stream.frame_rate))
+            elif stream.kind == "audio" and "audio" in kinds:
+                total += seconds * int(stream.sample_rate) / (2048 if stream.profile.startswith("HE") else 1024)
+        except (ValueError, ZeroDivisionError):
+            pass
+    return total
+
+
+def join_packets(parts: list[MediaFile], merged: MediaFile, kinds: tuple[str, ...] = CONTENT) -> float:
+    """How many packets of these kinds the join copies: as the parts or the merged file count them (MP4, mkvmerge),
+    else estimated from the parts' length. One count for both sides, so an estimate that is off is off for both."""
+    counts = [counted_packets(part, kinds) for part in parts]
+    if None not in counts:
+        return float(sum(counts))
+    counted = counted_packets(merged, kinds)
+    return float(counted) if counted is not None else sum(estimated_packets(part, kinds) for part in parts)
+
+
+def packet_bytes(files: list[MediaFile], packets: float) -> float | None:
+    """The bytes of the packets in these files (a video's parts, or the merged file), without the container's room:
+    as the files say (MediaFile.payload); for Matroska files without it their size less ffmpeg's room for `packets`
+    packets (MATROSKA_PACKET_BYTES). None for other kinds (WMV)."""
+    if files and all(file.payload is not None for file in files):
+        return float(sum(file.payload for file in files))
+    if files and all(file.container == "Matroska" for file in files):
+        return sum(file.size for file in files) - MATROSKA_PACKET_BYTES * packets
+    return None
+
+
+def size_window(parts: list[MediaFile], merged: MediaFile) -> tuple[float, float, float]:
+    """The size `merged` should have as the parts joined, and the smallest and largest size accepted.
+
+    The streams are copied, only the container's room changes: the parts' packets (packet_bytes) plus the merged
+    file's own room. For a .wmv (AsfBin) the parts' size. Within 1% (at least SIZE_FLOOR) either way, which still
+    refuses a file missing 2% of its packets; from Matroska parts that don't say their bytes, the merged file may also
+    be bigger by what packed audio (LACED_AUDIO_SAVING) would have saved."""
+    total = sum(part.size for part in parts)
+    packets = join_packets(parts, merged)
+    have, got = packet_bytes(parts, packets), packet_bytes([merged], packets)
+    expected = float(total) if have is None or got is None else merged.size - got + have
+    laced = 0.0
+    if parts and all(part.container == "Matroska" for part in parts) and any(part.payload is None for part in parts):
+        laced = LACED_AUDIO_SAVING * join_packets(parts, merged, ("audio",))
+    slack = size_tolerance(total)
+    return expected, expected - slack, expected + slack + laced
+
+
+def sizes_text(*sizes: int) -> list[str]:
+    """Sizes as "167.8 MB" ("2.43 GB" from 1 GB), with more decimals while different sizes would read the same."""
+    unit, name, start = (1e9, "GB", 2) if max(sizes) >= 1e9 else (1e6, "MB", 1)
+    for decimals in range(start, 10):
+        texts = [f"{size / unit:.{decimals}f} {name}" for size in sizes]
+        if len(set(texts)) == len(set(sizes)):
+            break
+    return texts
+
+
+def size_mismatch(parts: list[MediaFile], merged: MediaFile) -> tuple[str, str, str] | None:
+    """None when `merged` is as big as the parts joined should be (size_window). Else, as text (sizes_text), its size,
+    the parts' size and, when it is another kind of file than the parts, the size expected: "about 165.9 MB as
+    Matroska"."""
+    expected, low, high = size_window(parts, merged)
+    if low <= merged.size <= high:
+        return None
+    total = sum(part.size for part in parts)
+    if {part.container for part in parts} == {merged.container}:
+        return (*sizes_text(merged.size, total), "")
+    have, together, about = sizes_text(merged.size, total, round(expected))
+    return have, together, f"about {about} as {merged.container}"
 
 
 def file_identity(path: Path) -> tuple[int, int] | None:
@@ -176,9 +272,10 @@ def other_video(group: Group, target: Path, read: Callable[[Path], MediaFile] | 
     elif abs(there.duration - group.duration) > duration_tolerance(group.duration):
         return (f"{target} is already there, but it is another video ({dmm_parts.hms(there.duration)} long, "
                 f"the parts together {dmm_parts.hms(group.duration)})")
-    elif abs(there.size - group.size) > size_tolerance(group.size):
-        return (f"{target} is already there, but it is another video ({there.size / 1e9:.2f} GB, "
-                f"the parts together {group.size / 1e9:.2f} GB)")
+    elif size := size_mismatch(group.parts, there):
+        have, together, about = size
+        about = f", {about}" if about else ""
+        return f"{target} is already there, but it is another video ({have}, the parts together {together}{about})"
     return None
 
 

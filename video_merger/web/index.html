@@ -107,7 +107,7 @@
         <div class="body">
           <div class="note">Only WEB-DL parts (H.264 or HEVC video with AAC sound, as DMM delivers them), joined without re-encoding: same quality, about as fast as copying the files. Each join gets a chapter (“Part 1”, “Part 2”, …), and every sound and subtitle track is kept.</div>
           <div class="note">WMV parts (WMV or VC-1 video with WMA sound) are joined with AsfBin into one .wmv, also without re-encoding, with a marker at each join. Without AsfBin, .wmv files are left alone.</div>
-          <div class="note">Left as they are: VP9 videos (DMM's 4K parts), Blu-ray/DVD Remuxes and rips, parts in different formats, and parts that differ in picture size, frame rate, codec or sound. A video is merged only when every part is there and the result has the right length.</div>
+          <div class="note">Left as they are: VP9 videos (DMM's 4K parts), Blu-ray/DVD Remuxes and rips, parts in different formats, and parts that differ in picture size, frame rate, codec or sound. A video is merged only when no part is missing in between and the result has the right length. A missing last part can't be noticed.</div>
           <div class="note">DMM files are matched by the content id and part number DMM writes into each file, whatever they are called. Other files by name, within one folder: <span class="mono">name-pt1</span>, <span class="mono">name part 2</span>, <span class="mono">name_3</span>, <span class="mono">ABC-123-A</span>; and <span class="mono">name-1</span>, <span class="mono">name 2</span>, <span class="mono">Name (iii) more</span> when part 1 and another part are both there.</div>
         </div>
       </div>

@@ -4,8 +4,9 @@ Joins the parts of multi-part videos (for example DMM downloads that come in 2-4
 file, without re-encoding: same quality, takes as long as copying the files.
 
 It merges WEB-DL parts (.mkv, .mp4), and WMV parts with [AsfBin](#wmv-parts-asfbin), but not
-Blu-ray/DVD Remuxes or VP9, and refuses rather than guessing. A video is only merged when every part
-is there, the parts match (codec, size, frame rate, audio) and the result has the right length.
+Blu-ray/DVD Remuxes or VP9, and refuses rather than guessing. A video is only merged when no part is
+missing in between, the parts match (codec, size, frame rate, audio) and the result has the right
+length. A missing last part can't be noticed (unless you [check against DMM](#checking-the-parts-against-dmm)).
 Otherwise you get a clear reason and your files are left alone.
 
 It runs as a page in your browser (only your computer can use it), or in a terminal.
@@ -176,7 +177,7 @@ python -m video_merger "/data/dmm" --dmm-parts parts.csv --dry-run
 | `part 2 is 0:40:00 long, DMM's part 2 is 0:50:00` | With `--dmm-parts`: a part is cut short (or another file). |
 | `not in the DMM parts list`, `no DMM comment tag` | With `--dmm-parts`: DMM's list doesn't cover this video, so it isn't merged. |
 | `only part 1 of abc00123 is here` | With `--dmm-parts`: a single part file of a video DMM has in several parts. |
-| `FAILED: ...` | ffmpeg or AsfBin failed, or the result didn't pass the checks (length within 2 s or 0.5% of the parts' total, size within 1%, every stream kept). No output is kept and the parts are not changed. A file of the output's name that appeared after the parts were checked (or the one to redo, changed since) is never replaced: `... is there now ..., so it is not replaced`. |
+| `FAILED: ...` | ffmpeg or AsfBin failed, or the result didn't pass the checks (length within 2 s or 0.5% of the parts' total, size within 1% of what the parts take in that kind of file, every stream kept: an MKV of MP4 parts is a little smaller than the parts, an MP4 of MKV parts a little bigger). No output is kept and the parts are not changed. A file of the output's name that appeared after the parts were checked (or the one to redo, changed since) is never replaced: `... is there now ..., so it is not replaced`. |
 
 A warning that sound and picture lengths differ means the sound could be slightly out of sync
 after the join. Check the merged file around the chapter marks.
@@ -198,7 +199,13 @@ removed and ffmpeg or AsfBin is stopped with it.
 ## Windows program
 
 `VideoMerger.exe` is the same tool built with PyInstaller (no Python needed). Put `ffmpeg.exe`,
-`ffprobe.exe` and `asfbin.exe` next to it; they are never part of the download. Build it on Windows:
+`ffprobe.exe` and `asfbin.exe` next to it; they are never part of the download.
+
+It isn't signed, so Windows may warn that it is from an unknown publisher ("More info" -> "Run
+anyway"). With Windows' Smart App Control on, it is blocked completely, without "Run anyway": then
+use the Python version (`python -m video_merger`, see [How to use](#how-to-use)).
+
+Build it on Windows:
 
 ```
 powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
@@ -220,6 +227,17 @@ python -m unittest discover -s tests -t .
 
 The end-to-end tests make small clips with FFmpeg and are skipped when FFmpeg is not installed. AsfBin
 is never run by the tests: `tests/fake_asfbin.py` plays it.
+
+## Changes in 1.0.1
+
+- Low-bitrate MP4 parts (for example DMM's 300 kbit/s downloads) are merged into MKV. 1.0.0 refused
+  them ("the merged file is 0.17 GB, but the parts add up to 0.17 GB"): MKV keeps the same video in
+  a little less room than MP4, and the size check didn't allow for that. It does now, both ways,
+  and still refuses a merged file that lost even 2% of its picture and sound.
+- Sizes in messages are in MB below 1 GB, with enough decimals to tell them apart.
+- The Settings tab and the guides no longer say that every part is checked: a part missing in
+  between is found, a missing last part can't be.
+- The Windows guide says what to do when Smart App Control blocks the program.
 
 ## License
 

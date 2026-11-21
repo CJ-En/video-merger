@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -40,6 +40,9 @@ class Stream:
     # for the whole file, which only works for HEVC parts encoded with the same settings (for H.264 it puts each
     # part's settings into the stream itself). Empty for other codecs.
     settings: str = ""
+    # The stream's packets as the file counts them: an MP4's index (not a fragmented one's), the statistics mkvmerge
+    # writes (mkvmerge_statistics); 0 when unknown (other Matroska files).
+    frames: int = 0
 
     def signature(self) -> tuple:
         """What must be equal in every part for a merge without re-encoding (the frame rate: see same_rate)."""
@@ -67,6 +70,9 @@ class MediaFile:
     file_id: str | None = None  # from DMM's comment tag in its downloads
     part: int | None = None
     container: str = ""  # what ffprobe found inside, whatever the extension: "Matroska", "MP4", ... (container_name)
+    # The bytes of the file's packets, without the container's own room, when the file tells them: an MP4's (mp4_payload),
+    # a Matroska file mkvmerge wrote (mkvmerge_statistics). None for other files.
+    payload: int | None = None
 
     @property
     def video(self) -> Stream | None:
@@ -235,8 +241,32 @@ def _int(value) -> int:
         return 0
 
 
+def _tag(tags: dict, name: str):
+    """A tag by its lower-case name, also as ffprobe shows it with a language ("number_of_bytes-eng")."""
+    return tags.get(name, next((value for key, value in tags.items() if key.startswith(name + "-")), None))
+
+
+def mkvmerge_statistics(fmt: dict, raw_streams: list) -> tuple[dict, int | None] | None:
+    """The packets of each stream (by index) and the bytes of all packets of a Matroska file mkvmerge wrote, from the
+    statistics it writes into each track's tags (NUMBER_OF_FRAMES, NUMBER_OF_BYTES), or None.
+
+    Other programs, ffmpeg's joins too, copy those tags unchanged into the files they write, so they are only taken
+    from a file whose writer is mkvmerge's ("libebml ..."). The bytes are None when a stream has none."""
+    if not str(_lower_keys(fmt.get("tags")).get("encoder", "")).startswith("libebml"):
+        return None
+    frames, sizes = {}, []
+    for raw in raw_streams:
+        tags = _lower_keys(raw.get("tags"))
+        frames[_int(raw.get("index"))] = _int(_tag(tags, "number_of_frames"))
+        if raw.get("codec_type") in ("video", "audio", "subtitle"):
+            sizes.append(_int(_tag(tags, "number_of_bytes")))
+    return frames, sum(sizes) if sizes and all(sizes) else None
+
+
 def parse_probe(path: Path, size: int, data: dict) -> MediaFile:
     fmt = data.get("format") or {}
+    container = container_name(fmt.get("format_name"))
+    statistics = mkvmerge_statistics(fmt, data.get("streams") or []) if container == "Matroska" else None
     streams = []
     for raw in data.get("streams") or []:
         tags = _lower_keys(raw.get("tags"))
@@ -254,6 +284,7 @@ def parse_probe(path: Path, size: int, data: dict) -> MediaFile:
                 channels=_int(raw.get("channels")),
                 duration=parse_duration(raw.get("duration")) or parse_duration(tags.get("duration")),
                 settings=hevc_settings(dump_bytes(raw.get("extradata"))) if raw.get("codec_name") == "hevc" else "",
+                frames=_int(raw.get("nb_frames")) or (statistics[0].get(_int(raw.get("index")), 0) if statistics else 0),
             )
         )
     file_id, part = parse_dmm_comment(_lower_keys(fmt.get("tags")).get("comment"))
@@ -264,8 +295,39 @@ def parse_probe(path: Path, size: int, data: dict) -> MediaFile:
         streams=tuple(streams),
         file_id=file_id,
         part=part,
-        container=container_name(fmt.get("format_name")),
+        container=container,
+        payload=statistics[1] if statistics else None,
     )
+
+
+def mp4_payload(path: Path) -> int | None:
+    """The bytes of an MP4 file's packets: what its top-level "mdat" boxes hold, read from the boxes' 8 or 16 byte
+    headers only. The rest (the index of every packet, ...) is the container's own room. None when the boxes don't
+    fill the file exactly (damaged, or not an MP4)."""
+    try:
+        end = path.stat().st_size
+        total = at = 0
+        with open(path, "rb") as file:
+            while at < end:
+                file.seek(at)
+                head = file.read(16)
+                if len(head) < 8:
+                    return None
+                size, kind, header = int.from_bytes(head[:4], "big"), head[4:8], 8
+                if size == 1:  # a 64-bit size follows
+                    if len(head) < 16:
+                        return None
+                    size, header = int.from_bytes(head[8:16], "big"), 16
+                elif size == 0:  # up to the end of the file
+                    size = end - at
+                if size < header or at + size > end:
+                    return None
+                if kind == b"mdat":
+                    total += size - header
+                at += size
+    except OSError:
+        return None
+    return total
 
 
 def _run_ffprobe(cmd: list) -> dict:
@@ -297,4 +359,5 @@ def probe(path: Path, ffprobe: Path) -> MediaFile:
         for raw in streams:
             if raw.get("codec_name") == "hevc":
                 raw["extradata"] = dumps.get(raw.get("index"))
-    return parse_probe(path, path.stat().st_size, data)
+    media = parse_probe(path, path.stat().st_size, data)
+    return replace(media, payload=mp4_payload(path)) if media.container == "MP4" else media

@@ -203,6 +203,34 @@ class BuildFilesTest(unittest.TestCase):
         self.assertIn("dist/", ignored)
 
 
+class TextsTest(unittest.TestCase):
+    """What the page and the guides say."""
+
+    @staticmethod
+    def text(path: Path) -> str:
+        return " ".join(path.read_text(encoding="utf-8").split())  # lines joined as they read
+
+    def test_no_text_says_that_every_part_is_checked(self):
+        # The part numbers show a part missing in between (1, 3), never a missing last part.
+        for path in (WEB / "index.html", HERE / "README-windows.txt", ROOT / "README.md"):
+            text = self.text(path)
+            self.assertNotIn("every part is there", text, path.name)
+            self.assertIn("when no part is missing in between", text, path.name)
+            self.assertIn("A missing last part can't be noticed", text, path.name)
+
+    def test_what_to_do_when_smart_app_control_blocks_the_program(self):
+        for path in (HERE / "README-windows.txt", ROOT / "README.md"):
+            text = self.text(path)
+            self.assertIn("With Windows' Smart App Control on,", text, path.name)
+            self.assertIn('without "Run anyway"', text, path.name)
+            self.assertIn("python -m video_merger", text, path.name)
+
+    def test_the_readme_lists_this_versions_changes(self):
+        version = re.search(r'__version__ = "(.+)"', (ROOT / "video_merger" / "__init__.py").read_text(encoding="utf-8"))
+        self.assertEqual(version.group(1), "1.0.1")
+        self.assertIn("\n## Changes in 1.0.1\n", (ROOT / "README.md").read_text(encoding="utf-8"))
+
+
 def ico_images(data: bytes) -> dict[int, bytes]:
     """The images of an .ico by size, checked to be PNGs of that size (what make_icon.py writes)."""
     reserved, kind, count = struct.unpack("<HHH", data[:6])

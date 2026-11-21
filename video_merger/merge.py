@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import tools
-from .plan import PlanItem, duration_tolerance, file_identity, size_tolerance
+from .plan import PlanItem, duration_tolerance, file_identity, size_mismatch
 from .probe import MediaFile, ProbeError, probe
 
 log = logging.getLogger(__name__)
@@ -376,9 +376,12 @@ def merge(
             expected = group.duration
             if abs(merged.duration - expected) > duration_tolerance(expected):
                 raise MergeFailed(f"the merged file is {merged.duration:.1f} s long, but the parts add up to {expected:.1f} s")
-            size = partial.stat().st_size
-            if abs(size - group.size) > size_tolerance(group.size):
-                raise MergeFailed(f"the merged file is {size / 1e9:.2f} GB, but the parts add up to {group.size / 1e9:.2f} GB")
+            size = merged.size
+            mismatch = size_mismatch(group.parts, merged)
+            if mismatch:
+                have, together, about = mismatch
+                about = f" ({about})" if about else ""
+                raise MergeFailed(f"the merged file is {have}, but the parts add up to {together}{about}")
             have, want = content_streams(merged), content_streams(group.parts[0])
             if have != want:
                 raise MergeFailed(f"the merged file has {have} video/audio/subtitle streams instead of {want}")
