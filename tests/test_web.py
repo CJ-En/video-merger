@@ -65,7 +65,7 @@ class PageTest(unittest.TestCase):
     asfbin = False  # whether AsfBin is "found"
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="vm web "))
+        self.dir = Path(tempfile.mkdtemp(prefix="vm web ")).resolve()
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.patch(config, "config_dir", return_value=self.dir / "config")
         self.patch(logs, "log_dir", return_value=self.dir / "logs")

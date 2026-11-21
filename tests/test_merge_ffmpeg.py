@@ -60,7 +60,7 @@ def run_cli(*args: str) -> tuple[int, str]:
 @unittest.skipUnless(TOOLS, "ffmpeg/ffprobe not installed")
 class MergeTest(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="vm test "))  # a space and a quote in paths on purpose
+        self.dir = Path(tempfile.mkdtemp(prefix="vm test ")).resolve()  # a space and a quote in paths on purpose
         self.parts = self.dir / "it's here"
         self.parts.mkdir()
         patcher = mock.patch.object(logs, "log_dir", return_value=self.dir / "logs")
@@ -377,7 +377,7 @@ class MergeErrorTest(unittest.TestCase):
     """Errors around the join fail that one video with a reason (the stand-in tools are never started)."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="vm errors "))
+        self.dir = Path(tempfile.mkdtemp(prefix="vm errors ")).resolve()
         self.addCleanup(shutil.rmtree, self.dir, True)
         groups, _ = group_files([media(str(self.dir / f"x{n}.mkv"), "abc00123", n) for n in (1, 2)])
         self.item = build_plan(groups, None)[0]

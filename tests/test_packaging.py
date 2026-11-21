@@ -33,7 +33,7 @@ def load(path: Path):
 @unittest.skipUnless(POWERSHELL, "PowerShell not installed")
 class InstallBuildTest(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="vm build "))
+        self.dir = Path(tempfile.mkdtemp(prefix="vm build ")).resolve()
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.build, self.app = self.dir / "build", self.dir / "dist" / "VideoMerger"
         self.write(self.build, {"VideoMerger.exe": "new", "_internal/python.dll": "new", "_internal/video_merger/web/index.html": "new",
@@ -81,7 +81,7 @@ class NoticesTest(unittest.TestCase):
 
     def setUp(self):
         self.notices = load(NOTICES)
-        self.dir = Path(tempfile.mkdtemp(prefix="vm notices "))
+        self.dir = Path(tempfile.mkdtemp(prefix="vm notices ")).resolve()
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.internal = self.dir / "_internal"
         for name in ("python314.dll", "base_library.zip", "_ssl.pyd", "unicodedata.pyd", "libssl-3.dll", "libcrypto-3.dll",
@@ -116,7 +116,7 @@ class CheckDistTest(unittest.TestCase):
     """The build refuses files that name the computer it was built on, or private words (names it must not carry)."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="vm dist "))
+        self.dir = Path(tempfile.mkdtemp(prefix="vm dist ")).resolve()
         self.addCleanup(shutil.rmtree, self.dir, True)
 
     def check(self, *words, script=CHECK_DIST, env=None):
@@ -135,7 +135,7 @@ class CheckDistTest(unittest.TestCase):
 
     def test_private_words_from_the_file_next_to_it(self):
         # Kept out of the repository: refused-words.txt next to check_dist.py, ignored by git.
-        tool = Path(tempfile.mkdtemp(prefix="vm dist tool "))
+        tool = Path(tempfile.mkdtemp(prefix="vm dist tool ")).resolve()
         self.addCleanup(shutil.rmtree, tool, True)
         script = tool / CHECK_DIST.name
         shutil.copy(CHECK_DIST, script)
@@ -267,7 +267,7 @@ class IconTest(unittest.TestCase):
 
     def test_make_icon_writes_every_size(self):
         make_icon = load(HERE / "make_icon.py")
-        folder = Path(tempfile.mkdtemp(prefix="vm icon "))
+        folder = Path(tempfile.mkdtemp(prefix="vm icon ")).resolve()
         self.addCleanup(shutil.rmtree, folder, True)
         images = ico_images(make_icon.make(folder / "test.ico").read_bytes())
         self.assertEqual(sorted(images), self.SIZES)

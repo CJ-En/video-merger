@@ -286,7 +286,7 @@ class PlanTest(unittest.TestCase):
             self.assertEqual(item.action, "merge", cid)
 
     def test_a_file_under_the_outputs_name_must_be_this_video(self):
-        folder = Path(tempfile.mkdtemp(prefix="vm plan "))
+        folder = Path(tempfile.mkdtemp(prefix="vm plan ")).resolve()
         self.addCleanup(shutil.rmtree, folder, True)
         for name in ("abc00123.mkv", "My Video.mkv", "stu00901.wmv"):
             (folder / name).write_bytes(b"x")

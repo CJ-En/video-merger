@@ -87,7 +87,7 @@ class PlanTest(unittest.TestCase):
 
 class FindTest(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="vm wmv "))
+        self.dir = Path(tempfile.mkdtemp(prefix="vm wmv ")).resolve()
         self.addCleanup(shutil.rmtree, self.dir, True)
         for name in ("a_1.wmv", "a_2.wmv", "b.mkv", "c.avi", "a.partial.wmv", "a.partial.markers.txt"):
             (self.dir / name).write_bytes(b"")
@@ -127,7 +127,7 @@ class AsfBinTextTest(unittest.TestCase):
         self.assertEqual(merging.markers_text(parts, [1, 2, 3]), "0 Part 1\r\n120 Part 2\r\n3681.5 Part 3\r\n")
 
     def test_names_asfbin_can_read(self):
-        folder = Path(tempfile.mkdtemp(prefix="vm names "))
+        folder = Path(tempfile.mkdtemp(prefix="vm names ")).resolve()
         self.addCleanup(shutil.rmtree, folder, True)
         japanese = folder / "動画" / "abc00123_1.wmv"  # a part: there
         japanese.parent.mkdir()
@@ -159,7 +159,7 @@ class AsfBinTextTest(unittest.TestCase):
             self.assertEqual(merging.partial_path(target).name, "見本動画185.partial.wmv")
 
     def test_a_file_that_is_not_a_program(self):
-        folder = Path(tempfile.mkdtemp(prefix="vm not asfbin "))
+        folder = Path(tempfile.mkdtemp(prefix="vm not asfbin ")).resolve()
         self.addCleanup(shutil.rmtree, folder, True)
         (folder / "asfbin.exe").write_bytes(b"")
         groups, _ = group_files([wmv(str(folder / f"abc00123_{n}.wmv")) for n in (1, 2)])
@@ -185,7 +185,7 @@ class AsfBinMergeTest(unittest.TestCase):
     """Real WMV2/WMAv2 clips made with FFmpeg, joined by the stand-in, then the real result checks."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="vm asf "))  # a space and a quote in paths on purpose
+        self.dir = Path(tempfile.mkdtemp(prefix="vm asf ")).resolve()  # a space and a quote in paths on purpose
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.parts = self.dir / "it's here"
         self.parts.mkdir()
