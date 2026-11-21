@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Merger</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar-top">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><path class="tile" d="M2 0L14 0A2 2 0 0 1 16 2L16 14A2 2 0 0 1 14 16L2 16A2 2 0 0 1 0 14L0 2A2 2 0 0 1 2 0Z"/><path class="ink" d="M2.5 3.5H7V7H2.5ZM2.5 9H7V12.5H2.5ZM8.25 5.5L11 8L8.25 10.5ZM11.75 3.5H13.5V12.5H11.75Z"/></svg>
+      <span class="brand-name">Video <b>Merger</b></span> <small id="version"></small>
+    </div>
+    <div class="status">
+      <span class="dot off" id="ffmpegStatus">Starting…</span>
+      <span class="dot" id="asfbinStatus"></span>
+      <button type="button" class="iconbtn" id="themeBtn" title="Switch dark or light" aria-label="Switch dark or light"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm0 1.5v11a5.5 5.5 0 0 1 0-11Z"/></svg></button>
+    </div>
+  </div>
+  <nav class="wrap tabs" role="tablist">
+    <button type="button" role="tab" aria-selected="true" data-tab="merge">Merge</button>
+    <button type="button" role="tab" aria-selected="false" data-tab="settings">Settings</button>
+    <button type="button" role="tab" aria-selected="false" data-tab="log">Log</button>
+  </nav>
+</header>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<main class="wrap">
+  <section id="tab-merge">
+    <div class="grid">
+      <aside class="panel">
+        <h2>Merge options</h2>
+        <div class="body">
+          <div class="field"><span>Save merged videos</span>
+            <div class="radios">
+              <label class="check"><input type="radio" name="out" id="out-next" value="next"><span>Next to their parts <small>the default</small></span></label>
+              <label class="check"><input type="radio" name="out" id="out-folder" value="folder"><span>All in one folder</span></label>
+            </div>
+            <div class="inline indent"><input type="text" id="outPath" class="mono" spellcheck="false" aria-label="Folder for merged videos"><button type="button" class="btn small" id="outBrowse">Browse…</button></div>
+          </div>
+          <div class="field"><span>File type</span>
+            <div class="radios">
+              <label class="check"><input type="radio" name="fmt" id="fmt-mkv" value="mkv"><span>MKV <small>the default, the safest for joined parts</small></span></label>
+              <label class="check"><input type="radio" name="fmt" id="fmt-mp4" value="mp4"><span>MP4</span></label>
+            </div>
+            <small>WMV parts (joined with AsfBin) always give a .wmv file: they are never re-encoded.</small>
+          </div>
+          <label class="check"><input type="checkbox" id="optSub"><span>Also look in subfolders</span></label>
+          <label class="check"><input type="checkbox" id="optAgain"><span>Merge again videos already merged <small>replaces the merged file</small></span></label>
+          <label class="check"><input type="checkbox" id="optDelete"><span>Delete the parts after a merge <small>only once the merged file passed every check</small></span></label>
+          <div class="note warnbg" id="deleteNote" hidden>The parts are deleted for good (not to the Recycle Bin), right after their merged file passed the checks: length, size and every sound and subtitle track.</div>
+        </div>
+      </aside>
+
+      <div class="panel">
+        <div class="add">
+          <label class="field" for="addPath"><span>Folders or video files to look in</span></label>
+          <div class="addrow">
+            <input type="text" id="addPath" class="mono" placeholder="Paste a folder or file, e.g. D:\Downloads\DMM" spellcheck="false">
+            <button type="button" class="btn" id="addBtn">Add</button>
+            <button type="button" class="btn" id="addBrowse">Browse…</button>
+          </div>
+          <div class="sources" id="sources"></div>
+          <div class="tip">In Explorer: Shift + right-click a folder, “Copy as path”, then paste it here. You can also drag folders onto VideoMerger.exe: the page opens with them added.</div>
+        </div>
+        <div class="qhead">
+          <div class="counts" id="counts"></div>
+          <div class="qbtns">
+            <button type="button" class="btn small" id="clearBtn" hidden>Clear list</button>
+            <button type="button" class="btn small" id="stopBtn" hidden>Stop after this one</button>
+            <button type="button" class="btn" id="scanBtn">Look for videos</button>
+            <button type="button" class="btn primary" id="mergeBtn" disabled>Merge</button>
+          </div>
+        </div>
+        <div id="list"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <div class="cols">
+      <div class="panel">
+        <h2>Programs</h2>
+        <div class="body">
+          <div class="tools" id="progTools"></div>
+          <div class="note">Not included with Video Merger. Download FFmpeg yourself (<a href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" rel="noopener noreferrer">Windows builds</a> · <a href="https://ffmpeg.org/download.html" target="_blank" rel="noopener noreferrer">all systems</a>) and put <span class="mono">ffmpeg.exe</span> and <span class="mono">ffprobe.exe</span> next to this program or on PATH.</div>
+          <div class="note">AsfBin, for WMV parts (<a href="http://www.radioactivepages.com" target="_blank" rel="noopener noreferrer">radioactivepages.com</a>): Windows only, free for non-commercial use. Put <span class="mono">asfbin.exe</span> next to this program or on PATH; without it, .wmv files are left alone.</div>
+          <details>
+            <summary>Use other copies</summary>
+            <div class="stack">
+              <div class="field"><span>FFmpeg <small>(a file or its folder)</small></span><input type="text" class="mono" id="setFfmpeg" spellcheck="false" placeholder="empty = next to this program, then PATH"></div>
+              <div class="field"><span>ffprobe</span><input type="text" class="mono" id="setFfprobe" spellcheck="false" placeholder="empty = next to this program, then PATH"></div>
+              <div class="field"><span>AsfBin</span><input type="text" class="mono" id="setAsfbin" spellcheck="false" placeholder="empty = next to this program, then PATH"></div>
+              <button type="button" class="btn small start" id="progSave">Save</button>
+            </div>
+          </details>
+          <button type="button" class="btn small start" id="doctorBtn">Check setup again</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>What gets merged</h2>
+        <div class="body">
+          <div class="note">Only WEB-DL parts (H.264 or HEVC video with AAC sound, as DMM delivers them), joined without re-encoding: same quality, about as fast as copying the files. Each join gets a chapter (“Part 1”, “Part 2”, …), and every sound and subtitle track is kept.</div>
+          <div class="note">WMV parts (WMV or VC-1 video with WMA sound) are joined with AsfBin into one .wmv, also without re-encoding, with a marker at each join. Without AsfBin, .wmv files are left alone.</div>
+          <div class="note">Left as they are: VP9 videos (DMM's 4K parts), Blu-ray/DVD Remuxes and rips, parts in different formats, and parts that differ in picture size, frame rate, codec or sound. A video is merged only when every part is there and the result has the right length.</div>
+          <div class="note">DMM files are matched by the content id and part number DMM writes into each file, whatever they are called. Other files by name, within one folder: <span class="mono">name-pt1</span>, <span class="mono">name part 2</span>, <span class="mono">name_3</span>, <span class="mono">ABC-123-A</span>; and <span class="mono">name-1</span>, <span class="mono">name 2</span>, <span class="mono">Name (iii) more</span> when part 1 and another part are both there.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-log" hidden>
+    <div class="log" id="log" aria-live="polite"></div>
+  </section>
+
+  <div class="foot">
+    <span id="footAddr">Runs on your computer only; closing the window stops Video Merger (a merge in progress is removed, the parts are never changed).</span>
+    <span>Log: <span class="mono" id="footLog"></span></span>
+    <button type="button" class="btn small" id="quitBtn">Quit</button>
+  </div>
+  <div class="note goodbye" id="goodbye" hidden>Video Merger doesn't answer (closed?). Start it again to continue.</div>
+</main>
+
+<div class="scrim" id="browse" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="browseTitle">
+    <header id="browseTitle">Choose a folder</header>
+    <div class="crumb"><button type="button" class="btn small" id="browseUp" aria-label="Up one folder">Up</button><span class="mono" id="browsePath"></span></div>
+    <div class="list" id="browseList"></div>
+    <footer>
+      <span class="tip" id="browseHint">Open folders with a click.</span>
+      <button type="button" class="btn" id="browseCancel">Cancel</button>
+      <button type="button" class="btn primary" id="browseOk">Use this folder</button>
+    </footer>
+  </div>
+</div>
+</body>
+</html>
